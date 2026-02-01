@@ -58,7 +58,7 @@ all = [
 
 [project.urls]
 Homepage = "https://github.com/miichoow/ACMEOW"
-Documentation = "https://github.com/miichoow/ACMEOW#readme"
+Documentation = "https://miichoow.github.io/ACMEOW/"
 Repository = "https://github.com/miichoow/ACMEOW"
 Issues = "https://github.com/miichoow/ACMEOW/issues"
 
