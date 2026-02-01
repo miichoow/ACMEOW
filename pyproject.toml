@@ -1,0 +1,84 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "acmeow"
+version = "1.0.0"
+description = "Production-grade ACME protocol client library for automated SSL/TLS certificate management"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+authors = [
+    { name = "ACMEOW Contributors" }
+]
+keywords = ["acme", "ssl", "tls", "certificate", "letsencrypt", "automation", "dns", "cloudflare", "route53"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Internet :: WWW/HTTP",
+    "Topic :: Security :: Cryptography",
+    "Topic :: System :: Systems Administration",
+    "Typing :: Typed",
+]
+dependencies = [
+    "cryptography>=41.0.0",
+    "requests>=2.31.0",
+]
+
+[project.optional-dependencies]
+dns-route53 = [
+    "boto3>=1.26.0",
+]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "mypy>=1.0.0",
+    "ruff>=0.1.0",
+    "types-requests>=2.31.0",
+    "boto3-stubs[route53]>=1.26.0",
+]
+docs = [
+    "sphinx>=7.0.0",
+    "furo>=2024.1.0",
+    "sphinx-autodoc-typehints>=2.0.0",
+    "myst-parser>=3.0.0",
+]
+all = [
+    "acmeow[dns-route53]",
+]
+
+[project.urls]
+Homepage = "https://github.com/miichoow/ACMEOW"
+Documentation = "https://github.com/miichoow/ACMEOW#readme"
+Repository = "https://github.com/miichoow/ACMEOW"
+Issues = "https://github.com/miichoow/ACMEOW/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/acmeow"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]

@@ -1,0 +1,9 @@
+# Documentation dependencies
+sphinx>=7.0.0
+furo>=2024.1.0
+sphinx-autodoc-typehints>=2.0.0
+myst-parser>=3.0.0
+
+# Project dependencies (needed for autodoc)
+cryptography>=41.0.0
+requests>=2.31.0
