@@ -1,8 +1,8 @@
 # ACMEOW
 
 [![Tests](https://github.com/miichoow/ACMEOW/actions/workflows/tests.yml/badge.svg)](https://github.com/miichoow/ACMEOW/actions/workflows/tests.yml)
-[![PyPI version](https://img.shields.io/pypi/v/acmeow.svg)](https://pypi.org/project/acmeow/)
-[![Python versions](https://img.shields.io/pypi/pyversions/acmeow.svg)](https://pypi.org/project/acmeow/)
+[![PyPI version](https://img.shields.io/pypi/v/acmeow.svg?v=1)](https://pypi.org/project/acmeow/)
+[![Python versions](https://img.shields.io/pypi/pyversions/acmeow.svg?v=1)](https://pypi.org/project/acmeow/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![codecov](https://codecov.io/gh/miichoow/ACMEOW/branch/main/graph/badge.svg)](https://codecov.io/gh/miichoow/ACMEOW)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
