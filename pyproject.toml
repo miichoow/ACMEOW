@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "acmeow"
-version = "1.0.0"
+version = "1.0.2"
 description = "Production-grade ACME protocol client library for automated SSL/TLS certificate management"
 readme = "README.md"
 license = "Apache-2.0"
