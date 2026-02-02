@@ -90,7 +90,7 @@ class AcmeClient:
         server_url: str,
         email: str,
         storage_path: Path | str,
-        proxy_url: str = None,
+        proxy_url: str | None = None,
         verify_ssl: bool = True,
         timeout: int = 30,
         retry_config: RetryConfig | None = None,
