@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "acmeow"
-version = "1.0.2"
+version = "1.0.3"
 description = "Production-grade ACME protocol client library for automated SSL/TLS certificate management"
 readme = "README.md"
 license = "Apache-2.0"
@@ -32,6 +32,7 @@ classifiers = [
 dependencies = [
     "cryptography>=41.0.0",
     "requests>=2.31.0",
+    "requests[socks]>=2.31.0",
 ]
 
 [project.optional-dependencies]

@@ -225,6 +225,24 @@ The client automatically retries on:
 - Server errors (HTTP 500, 502, 503, 504)
 - Connection errors and timeouts
 
+### Proxy Configuration
+
+Use proxy for ACME HTTP client:
+
+```python
+from acmeow import AcmeClient
+
+# Custom retry settings
+proxy_url = "socks5://proxy.example.com:1080"
+
+client = AcmeClient(
+    server_url="https://acme-v02.api.letsencrypt.org/directory",
+    email="admin@example.com",
+    storage_path=Path("./acme_data"),
+    proxy_url=proxy_url,
+)
+```
+
 ### DNS Propagation Verification
 
 Verify DNS records are visible before completing DNS-01 challenges:

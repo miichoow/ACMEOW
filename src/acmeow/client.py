@@ -63,6 +63,7 @@ class AcmeClient:
         server_url: ACME server directory URL.
         email: Account email address.
         storage_path: Directory for storing account and certificate data.
+        proxy_url: URL to the proxy. Default None.
         verify_ssl: Whether to verify SSL certificates. Default True.
         timeout: Request timeout in seconds. Default 30.
         retry_config: Retry configuration for transient failures.
@@ -89,6 +90,7 @@ class AcmeClient:
         server_url: str,
         email: str,
         storage_path: Path | str,
+        proxy_url: str = None,
         verify_ssl: bool = True,
         timeout: int = 30,
         retry_config: RetryConfig | None = None,
@@ -100,6 +102,7 @@ class AcmeClient:
 
         # HTTP client with retry support
         self._http = AcmeHttpClient(
+            proxy_url=proxy_url,
             verify_ssl=verify_ssl,
             timeout=timeout,
             retry_config=retry_config,

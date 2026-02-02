@@ -82,18 +82,24 @@ class AcmeHttpClient:
     retry with exponential backoff for all ACME server communication.
 
     Args:
+        proxy_url: URL to the proxy. Default None.
         verify_ssl: Whether to verify SSL certificates. Default True.
         timeout: Request timeout in seconds. Default 30.
         retry_config: Retry configuration. Default uses standard backoff.
     """
-
     def __init__(
         self,
+        proxy_url: str = None,
         verify_ssl: bool = True,
         timeout: int = 30,
         retry_config: RetryConfig | None = None,
     ) -> None:
         self._session = requests.Session()
+        if proxy_url:
+            self._session.proxies = {
+                "http": proxy_url,
+                "https": proxy_url
+            }
         self._session.verify = verify_ssl
         self._timeout = timeout
         self._retry_config = retry_config or RetryConfig()
