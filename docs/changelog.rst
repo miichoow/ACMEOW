@@ -3,6 +3,20 @@ Changelog
 
 All notable changes to ACMEOW are documented here.
 
+Version 1.1.0
+-------------
+
+*Unreleased*
+
+Features
+~~~~~~~~
+
+- **External CSR support**: ``finalize_order()`` now accepts an optional ``csr``
+  parameter (PEM or DER encoded) so that users can supply a CSR generated
+  outside of ACMEOW. When an external CSR is provided, no private key is
+  generated or stored by the library. ``get_certificate()`` returns ``None``
+  for the key PEM in this case.
+
 Version 1.0.0
 -------------
 

@@ -108,7 +108,7 @@ from acmeow.models import (
 )
 from acmeow.orders import OrderInfo, OrderManager
 
-__version__ = "1.0.2"
+__version__ = "1.1.0"
 
 __all__ = [
     # Version

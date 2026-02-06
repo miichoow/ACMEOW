@@ -101,6 +101,45 @@ Step 4: Finalize and Get Certificate
    Path("certificate.pem").write_text(cert_pem)
    Path("private_key.pem").write_text(key_pem)
 
+Using an External CSR
+~~~~~~~~~~~~~~~~~~~~~
+
+If you manage your own private key (e.g., from a hardware security module or
+an external tool), you can pass a pre-generated CSR instead of having ACMEOW
+create one:
+
+.. code-block:: python
+
+   from cryptography import x509
+   from cryptography.hazmat.primitives import hashes, serialization
+   from cryptography.hazmat.primitives.asymmetric import ec
+   from cryptography.x509.oid import NameOID
+
+   # Generate key and CSR externally
+   my_key = ec.generate_private_key(ec.SECP256R1())
+   csr = (
+       x509.CertificateSigningRequestBuilder()
+       .subject_name(x509.Name([
+           x509.NameAttribute(NameOID.COMMON_NAME, "example.com"),
+       ]))
+       .add_extension(
+           x509.SubjectAlternativeName([x509.DNSName("example.com")]),
+           critical=False,
+       )
+       .sign(my_key, hashes.SHA256())
+   )
+   csr_pem = csr.public_bytes(serialization.Encoding.PEM)
+
+   # Finalize with external CSR — no key is generated or stored by ACMEOW
+   client.finalize_order(csr=csr_pem)
+
+   # key_pem is None because the key was not managed by ACMEOW
+   cert_pem, _ = client.get_certificate()
+
+Both PEM (``str`` or ``bytes``) and DER (``bytes``) encoded CSRs are accepted.
+When a CSR is provided, the ``key_type`` and ``common_name`` parameters are
+ignored.
+
 Complete Example
 ----------------
 

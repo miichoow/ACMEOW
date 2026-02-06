@@ -229,6 +229,7 @@ def quick_issue(
         cert_pem, key_pem = client.get_certificate()
 
     logger.info("Certificate issued successfully for %s", domain)
+    assert key_pem is not None, "key_pem should never be None when CSR is generated internally"
     return cert_pem, key_pem
 
 
