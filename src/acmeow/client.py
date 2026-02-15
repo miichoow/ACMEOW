@@ -460,7 +460,9 @@ class AcmeClient:
         if not self._order or not self._account or not self._account.uri:
             return
 
-        data = self._http.get(self._order.url).json()
+        data = self._http.post_as_get(
+            self._order.url, self._account.key, self._account.uri,
+        ).json()
         auth_urls = data.get("authorizations", [])
 
         self._order.authorizations.clear()
