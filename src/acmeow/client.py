@@ -124,6 +124,10 @@ class AcmeClient:
         # DNS verification
         self._dns_config: DnsConfig | None = None
 
+        # Set when finalize_order() is called with an external csr= argument so
+        # get_certificate() knows not to read back a private key from disk.
+        self._external_csr_used: bool = False
+
         # Fetch directory on initialization
         self._fetch_directory()
 
@@ -846,15 +850,26 @@ class AcmeClient:
         self,
         key_type: KeyType = KeyType.EC256,
         common_name: str | None = None,
+        csr: bytes | None = None,
     ) -> None:
         """Finalize the order by submitting a CSR.
 
-        Generates a private key and CSR, then submits them to finalize
-        the order. The private key is saved to disk.
+        When *csr* is provided (DER-encoded bytes), it is submitted directly and
+        no private key is generated or saved.  This is the external-CSR mode
+        required by proxy use-cases where the key pair lives on the downstream
+        client.  ``get_certificate()`` will return an empty string for the key
+        in that case.
+
+        When *csr* is ``None`` (default), a private key and CSR are generated
+        internally, the key is saved to disk, and ``get_certificate()`` returns
+        the PEM-encoded key as the second element of the tuple.
 
         Args:
-            key_type: Key type for the certificate. Default EC256.
+            key_type: Key type when generating internally. Default EC256.
             common_name: Common name override (defaults to first identifier).
+                Ignored when *csr* is provided.
+            csr: DER-encoded certificate signing request from an external source.
+                When set, *key_type* and *common_name* are ignored.
 
         Raises:
             AcmeOrderError: If finalization fails.
@@ -872,22 +887,29 @@ class AcmeClient:
                 f"Order not ready for finalization (status: {self._order.status})"
             )
 
-        # Generate key and CSR
-        logger.info("Generating %s key and CSR", key_type.value)
-        cert_key = generate_private_key(key_type)
-        csr_der = create_csr(
-            list(self._order.identifiers),
-            cert_key,
-            common_name=common_name,
-        )
+        if csr is not None:
+            # External CSR — submit as-is, no key generation
+            logger.info("Finalizing order with external CSR")
+            csr_der = csr
+            self._external_csr_used = True
+        else:
+            # Internal path — generate key and CSR
+            logger.info("Generating %s key and CSR", key_type.value)
+            cert_key = generate_private_key(key_type)
+            csr_der = create_csr(
+                list(self._order.identifiers),
+                cert_key,
+                common_name=common_name,
+            )
 
-        # Save the private key
-        cert_path, key_path = self._account.get_certificate_paths(
-            self._order.common_name
-        )
-        key_path.parent.mkdir(parents=True, exist_ok=True)
-        key_path.write_bytes(serialize_private_key(cert_key))
-        logger.info("Certificate key saved to %s", key_path)
+            # Save the private key
+            _, key_path = self._account.get_certificate_paths(
+                self._order.common_name
+            )
+            key_path.parent.mkdir(parents=True, exist_ok=True)
+            key_path.write_bytes(serialize_private_key(cert_key))
+            logger.info("Certificate key saved to %s", key_path)
+            self._external_csr_used = False
 
         # Submit CSR
         payload = {"csr": base64url_encode(csr_der)}
@@ -974,6 +996,8 @@ class AcmeClient:
         Returns:
             Tuple of (certificate_pem, private_key_pem).
             The certificate includes the full chain.
+            When the order was finalized with an external CSR (``csr=`` argument),
+            private_key_pem is an empty string because no key was generated.
 
         Raises:
             AcmeCertificateError: If certificate download fails.
@@ -1011,8 +1035,8 @@ class AcmeClient:
         cert_path.write_text(cert_pem)
         logger.info("Certificate saved to %s", cert_path)
 
-        # Read private key
-        key_pem = key_path.read_text()
+        # Read private key — not available when an external CSR was used
+        key_pem = "" if self._external_csr_used else key_path.read_text()
 
         # Clear saved order (completed)
         self._clear_order()

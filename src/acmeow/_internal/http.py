@@ -190,9 +190,16 @@ class AcmeHttpClient:
                 requests.Timeout,
             ))
 
-        if response is not None:
-            # Retry on specific status codes
-            return response.status_code in RETRYABLE_STATUS_CODES
+        if response is not None and response.status_code in RETRYABLE_STATUS_CODES:
+            # A 500 with an RFC 8555 problem body is a server-reported policy or
+            # configuration error (e.g. "domain not authorized"), not a transient
+            # network failure.  Don't retry — let _handle_error_response raise
+            # AcmeServerError immediately with the actual upstream detail.
+            if response.status_code == 500:
+                ct = response.headers.get("Content-Type", "")
+                if "application/problem+json" in ct:
+                    return False
+            return True
 
         return False
 
@@ -228,6 +235,7 @@ class AcmeHttpClient:
             AcmeNetworkError: If request fails after all retries.
         """
         last_exception: Exception | None = None
+        last_response: requests.Response | None = None
 
         for attempt in range(self._retry_config.max_retries + 1):
             try:
@@ -236,6 +244,9 @@ class AcmeHttpClient:
 
                 if not self._should_retry(response, None):
                     return response
+
+                # Track the last retryable response for error reporting on exhaustion
+                last_response = response
 
                 # Check for Retry-After header
                 retry_after = self._get_retry_after(response)
@@ -268,6 +279,10 @@ class AcmeHttpClient:
                         self._retry_config.max_retries + 1,
                     )
                     time.sleep(delay)
+
+        # All retries exhausted — raise with detail from the last response if available
+        if last_response is not None and last_response.status_code >= 400:
+            self._handle_error_response(last_response)
 
         if last_exception:
             raise AcmeNetworkError(
@@ -397,11 +412,9 @@ class AcmeHttpClient:
                     )
                     time.sleep(delay)
 
-        # All retries exhausted
-        if last_response is not None and last_response.status_code == 429:
-            raise AcmeRateLimitError(
-                f"Rate limited after {self._retry_config.max_retries + 1} attempts"
-            )
+        # All retries exhausted — raise with detail from the last response if available
+        if last_response is not None and last_response.status_code >= 400:
+            self._handle_error_response(last_response)
 
         if last_exception:
             raise AcmeNetworkError(

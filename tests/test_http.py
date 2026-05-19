@@ -324,9 +324,9 @@ class TestErrorHandling:
                 assert "malformed" in exc_info.value.error_type
 
     def test_rate_limit_error(self):
-        """Test handling of rate limit error."""
+        """Test handling of rate limit error — raises AcmeRateLimitError with server detail."""
         client = AcmeHttpClient(
-            retry_config=RetryConfig(max_retries=0)
+            retry_config=RetryConfig(max_retries=0, initial_delay=0.01)
         )
         client.set_nonce_url("https://acme.test/new-nonce")
 
@@ -337,7 +337,7 @@ class TestErrorHandling:
         nonce_response = MagicMock(headers={"Replay-Nonce": "nonce"})
         rate_limit_response = MagicMock(
             status_code=429,
-            headers={"Replay-Nonce": "nonce", "Retry-After": "60"},
+            headers={"Replay-Nonce": "nonce", "Retry-After": "0.01"},
         )
         rate_limit_response.json.return_value = {
             "type": "urn:ietf:params:acme:error:rateLimited",
@@ -353,8 +353,8 @@ class TestErrorHandling:
                         key,
                         kid="https://acme.test/acct/1",
                     )
-                # Rate limit error is raised when retries exhausted
-                assert "Rate limited" in str(exc_info.value)
+                # After retry exhaustion the server detail is propagated
+                assert "Too many requests" in str(exc_info.value)
 
 
 class TestRetryableStatusCodes:
@@ -375,3 +375,112 @@ class TestRetryableStatusCodes:
         assert 401 not in RETRYABLE_STATUS_CODES  # Unauthorized
         assert 403 not in RETRYABLE_STATUS_CODES  # Forbidden
         assert 404 not in RETRYABLE_STATUS_CODES  # Not Found
+
+
+class TestProblemJsonFastFail:
+    """HTTP 500 + application/problem+json must not be retried."""
+
+    def _make_client(self):
+        return AcmeHttpClient(
+            retry_config=RetryConfig(max_retries=3, initial_delay=0.01, jitter=False)
+        )
+
+    def test_500_with_problem_json_raises_server_error_immediately(self):
+        """500 + problem+json → AcmeServerError, no retries."""
+        client = self._make_client()
+        client.set_nonce_url("https://acme.test/new-nonce")
+
+        from acmeow._internal.crypto import generate_account_key
+
+        key = generate_account_key()
+
+        nonce_response = MagicMock(headers={"Replay-Nonce": "nonce"})
+        error_response = MagicMock(
+            status_code=500,
+            headers={"Replay-Nonce": "nonce", "Content-Type": "application/problem+json"},
+        )
+        error_response.json.return_value = {
+            "type": "urn:ietf:params:acme:error:serverInternal",
+            "detail": "Domain not authorized for ACME",
+        }
+
+        with patch.object(client._session, "head", return_value=nonce_response):
+            with patch.object(client._session, "post", return_value=error_response) as mock_post:
+                with pytest.raises(AcmeServerError) as exc_info:
+                    client.post(
+                        "https://acme.test/new-order",
+                        {"identifiers": []},
+                        key,
+                        kid="https://acme.test/acct/1",
+                    )
+                # Must fail on the very first attempt
+                assert mock_post.call_count == 1
+                assert exc_info.value.status_code == 500
+                assert "Domain not authorized for ACME" in exc_info.value.detail
+
+    def test_500_without_problem_json_is_still_retried(self):
+        """500 without problem+json header → retried as a transient failure."""
+        client = self._make_client()
+        client.set_nonce_url("https://acme.test/new-nonce")
+
+        from acmeow._internal.crypto import generate_account_key
+
+        key = generate_account_key()
+
+        nonce_response = MagicMock(headers={"Replay-Nonce": "nonce"})
+        server_error = MagicMock(
+            status_code=500,
+            headers={"Replay-Nonce": "nonce", "Content-Type": "text/plain"},
+            text="Internal Server Error",
+        )
+        server_error.json.side_effect = ValueError("not JSON")
+        success_response = MagicMock(
+            status_code=200,
+            headers={"Replay-Nonce": "nonce"},
+        )
+
+        with patch.object(client._session, "head", return_value=nonce_response):
+            with patch.object(client._session, "post") as mock_post:
+                mock_post.side_effect = [server_error, success_response]
+                response = client.post(
+                    "https://acme.test/new-order",
+                    {"identifiers": []},
+                    key,
+                    kid="https://acme.test/acct/1",
+                )
+                assert response.status_code == 200
+                assert mock_post.call_count == 2
+
+    def test_retry_exhaustion_raises_server_error_with_detail(self):
+        """When all retries on a 503 are exhausted, raise AcmeServerError with body detail."""
+        client = AcmeHttpClient(
+            retry_config=RetryConfig(max_retries=1, initial_delay=0.01, jitter=False)
+        )
+        client.set_nonce_url("https://acme.test/new-nonce")
+
+        from acmeow._internal.crypto import generate_account_key
+
+        key = generate_account_key()
+
+        nonce_response = MagicMock(headers={"Replay-Nonce": "nonce"})
+        error_response = MagicMock(
+            status_code=503,
+            headers={"Replay-Nonce": "nonce", "Content-Type": "application/problem+json"},
+        )
+        error_response.json.return_value = {
+            "type": "urn:ietf:params:acme:error:serverInternal",
+            "detail": "Service temporarily unavailable",
+        }
+
+        with patch.object(client._session, "head", return_value=nonce_response):
+            with patch.object(client._session, "post", return_value=error_response) as mock_post:
+                with pytest.raises(AcmeServerError) as exc_info:
+                    client.post(
+                        "https://acme.test/new-order",
+                        {"identifiers": []},
+                        key,
+                        kid="https://acme.test/acct/1",
+                    )
+                # 2 total attempts (1 initial + 1 retry), then raises with detail
+                assert mock_post.call_count == 2
+                assert "Service temporarily unavailable" in exc_info.value.detail

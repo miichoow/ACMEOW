@@ -422,3 +422,207 @@ class TestContextManager:
                 ) as client:
                     pass
                 mock_close.assert_called()
+
+
+class TestFinalizeOrderExternalCSR:
+    """Tests for finalize_order with an external CSR."""
+
+    @pytest.fixture
+    def client_with_ready_order(self, temp_storage: Path):
+        """Client with an account and a READY order."""
+        mock_dir = MagicMock()
+        mock_dir.json.return_value = {
+            "newNonce": "https://acme.test/new-nonce",
+            "newAccount": "https://acme.test/new-account",
+            "newOrder": "https://acme.test/new-order",
+        }
+        mock_dir.headers = {"Replay-Nonce": "nonce"}
+
+        with patch("requests.Session.get", return_value=mock_dir):
+            client = AcmeClient(
+                server_url="https://acme.test/directory",
+                email="test@example.com",
+                storage_path=temp_storage,
+            )
+
+        # Wire up a mock account
+        from acmeow.models.account import Account
+
+        acct = Account(
+            email="test@example.com",
+            storage_path=temp_storage,
+            server_url="https://acme.test/directory",
+        )
+        acct.create_key()
+        acct.save("https://acme.test/acct/1", "valid")
+        client._account = acct
+
+        # Wire up a READY order
+        from acmeow.models.order import Order
+        from acmeow.enums import OrderStatus
+
+        client._order = Order(
+            status=OrderStatus.READY,
+            url="https://acme.test/order/1",
+            identifiers=(Identifier.dns("example.com"),),
+            finalize_url="https://acme.test/order/1/finalize",
+        )
+        return client
+
+    def _make_external_csr(self) -> bytes:
+        """Return a minimal DER-encoded CSR for example.com."""
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import ec
+        from cryptography.x509.oid import NameOID
+
+        key = ec.generate_private_key(ec.SECP256R1())
+        csr = (
+            x509.CertificateSigningRequestBuilder()
+            .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "example.com")]))
+            .add_extension(
+                x509.SubjectAlternativeName([x509.DNSName("example.com")]),
+                critical=False,
+            )
+            .sign(key, hashes.SHA256())
+        )
+        return csr.public_bytes(serialization.Encoding.DER)
+
+    def test_finalize_with_external_csr_skips_key_generation(self, client_with_ready_order):
+        """External CSR path must not call generate_private_key."""
+        client = client_with_ready_order
+        csr_der = self._make_external_csr()
+
+        # Responses: refresh order (READY), finalize POST, poll order (VALID)
+        refresh_ready = MagicMock(status_code=200, headers={"Replay-Nonce": "n1"})
+        refresh_ready.json.return_value = {
+            "status": "ready",
+            "identifiers": [{"type": "dns", "value": "example.com"}],
+            "finalize": "https://acme.test/order/1/finalize",
+        }
+        finalize_ok = MagicMock(status_code=200, headers={"Replay-Nonce": "n2"})
+        finalize_ok.json.return_value = {"status": "processing"}
+        poll_valid = MagicMock(status_code=200, headers={"Replay-Nonce": "n3"})
+        poll_valid.json.return_value = {
+            "status": "valid",
+            "certificate": "https://acme.test/cert/1",
+        }
+
+        with patch("acmeow.client.generate_private_key") as mock_gen_key:
+            with patch.object(client._http._session, "post") as mock_post:
+                mock_post.side_effect = [refresh_ready, finalize_ok, poll_valid]
+                client.finalize_order(csr=csr_der)
+
+            mock_gen_key.assert_not_called()
+            assert client._external_csr_used is True
+
+    def test_finalize_with_external_csr_sends_correct_payload(self, client_with_ready_order):
+        """The CSR bytes in the payload must match what was passed in."""
+        import base64
+
+        client = client_with_ready_order
+        csr_der = self._make_external_csr()
+
+        refresh_ready = MagicMock(status_code=200, headers={"Replay-Nonce": "n1"})
+        refresh_ready.json.return_value = {
+            "status": "ready",
+            "identifiers": [{"type": "dns", "value": "example.com"}],
+            "finalize": "https://acme.test/order/1/finalize",
+        }
+        finalize_ok = MagicMock(status_code=200, headers={"Replay-Nonce": "n2"})
+        finalize_ok.json.return_value = {"status": "processing"}
+        poll_valid = MagicMock(status_code=200, headers={"Replay-Nonce": "n3"})
+        poll_valid.json.return_value = {
+            "status": "valid",
+            "certificate": "https://acme.test/cert/1",
+        }
+
+        with patch.object(client._http._session, "post") as mock_post:
+            mock_post.side_effect = [refresh_ready, finalize_ok, poll_valid]
+            client.finalize_order(csr=csr_der)
+
+        # The finalize POST is the second call; extract the JWS payload
+        finalize_call = mock_post.call_args_list[1]
+        jws_body = finalize_call[1]["json"]
+        # payload is base64url-encoded JSON — decode it
+        payload_b64 = jws_body["payload"]
+        # Pad to multiple of 4
+        padded = payload_b64 + "=" * (-len(payload_b64) % 4)
+        payload_json = json.loads(base64.urlsafe_b64decode(padded))
+        # The csr field in the payload must round-trip back to the original bytes
+        csr_b64 = payload_json["csr"]
+        padded_csr = csr_b64 + "=" * (-len(csr_b64) % 4)
+        decoded_csr = base64.urlsafe_b64decode(padded_csr)
+        assert decoded_csr == csr_der
+
+    def test_get_certificate_returns_empty_key_for_external_csr(self, client_with_ready_order, tmp_path):
+        """get_certificate returns '' for the key when external CSR was used."""
+        client = client_with_ready_order
+        client._external_csr_used = True
+
+        from acmeow.models.order import Order
+        from acmeow.enums import OrderStatus
+
+        client._order = Order(
+            status=OrderStatus.VALID,
+            url="https://acme.test/order/1",
+            identifiers=(Identifier.dns("example.com"),),
+            finalize_url="https://acme.test/order/1/finalize",
+            certificate_url="https://acme.test/cert/1",
+        )
+
+        cert_pem = "-----BEGIN CERTIFICATE-----\nMIIB...\n-----END CERTIFICATE-----\n"
+
+        refresh_valid = MagicMock(status_code=200, headers={"Replay-Nonce": "n1"})
+        refresh_valid.json.return_value = {
+            "status": "valid",
+            "certificate": "https://acme.test/cert/1",
+        }
+        cert_response = MagicMock(status_code=200, headers={"Replay-Nonce": "n2", "Link": ""})
+        cert_response.text = cert_pem
+
+        with patch.object(client._http._session, "post") as mock_post:
+            mock_post.side_effect = [refresh_valid, cert_response]
+            returned_cert, returned_key = client.get_certificate()
+
+        assert returned_cert == cert_pem
+        assert returned_key == ""
+
+    def test_get_certificate_returns_key_for_internal_csr(self, client_with_ready_order, tmp_path):
+        """get_certificate returns the key PEM when the key was generated internally."""
+        client = client_with_ready_order
+        client._external_csr_used = False
+
+        from acmeow.models.order import Order
+        from acmeow.enums import OrderStatus
+
+        client._order = Order(
+            status=OrderStatus.VALID,
+            url="https://acme.test/order/1",
+            identifiers=(Identifier.dns("example.com"),),
+            finalize_url="https://acme.test/order/1/finalize",
+            certificate_url="https://acme.test/cert/1",
+        )
+
+        cert_pem = "-----BEGIN CERTIFICATE-----\nMIIB...\n-----END CERTIFICATE-----\n"
+        key_pem = "-----BEGIN EC PRIVATE KEY-----\nMHQ...\n-----END EC PRIVATE KEY-----\n"
+
+        # Provide a key file where get_certificate_paths points
+        _, key_path = client._account.get_certificate_paths(client._order.common_name)
+        key_path.parent.mkdir(parents=True, exist_ok=True)
+        key_path.write_text(key_pem)
+
+        refresh_valid = MagicMock(status_code=200, headers={"Replay-Nonce": "n1"})
+        refresh_valid.json.return_value = {
+            "status": "valid",
+            "certificate": "https://acme.test/cert/1",
+        }
+        cert_response = MagicMock(status_code=200, headers={"Replay-Nonce": "n2", "Link": ""})
+        cert_response.text = cert_pem
+
+        with patch.object(client._http._session, "post") as mock_post:
+            mock_post.side_effect = [refresh_valid, cert_response]
+            returned_cert, returned_key = client.get_certificate()
+
+        assert returned_cert == cert_pem
+        assert returned_key == key_pem
