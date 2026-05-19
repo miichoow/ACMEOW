@@ -514,7 +514,6 @@ class TestFinalizeOrderExternalCSR:
                 client.finalize_order(csr=csr_der)
 
             mock_gen_key.assert_not_called()
-            assert client._external_csr_used is True
 
     def test_finalize_with_external_csr_sends_correct_payload(self, client_with_ready_order):
         """The CSR bytes in the payload must match what was passed in."""
@@ -556,9 +555,8 @@ class TestFinalizeOrderExternalCSR:
         assert decoded_csr == csr_der
 
     def test_get_certificate_returns_empty_key_for_external_csr(self, client_with_ready_order, tmp_path):
-        """get_certificate returns '' for the key when external CSR was used."""
+        """get_certificate returns None for the key when external CSR was used (no key file on disk)."""
         client = client_with_ready_order
-        client._external_csr_used = True
 
         from acmeow.models.order import Order
         from acmeow.enums import OrderStatus
@@ -586,12 +584,11 @@ class TestFinalizeOrderExternalCSR:
             returned_cert, returned_key = client.get_certificate()
 
         assert returned_cert == cert_pem
-        assert returned_key == ""
+        assert returned_key is None
 
     def test_get_certificate_returns_key_for_internal_csr(self, client_with_ready_order, tmp_path):
         """get_certificate returns the key PEM when the key was generated internally."""
         client = client_with_ready_order
-        client._external_csr_used = False
 
         from acmeow.models.order import Order
         from acmeow.enums import OrderStatus
