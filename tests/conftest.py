@@ -261,6 +261,17 @@ def mock_http_client(mock_server: MockAcmeServer):
                 },
             )
 
+        if mock_server.simulate_bad_nonce:
+            mock_server.simulate_bad_nonce = False  # one-shot: succeed on retry
+            return MockResponse(
+                status_code=400,
+                json_data={
+                    "type": "urn:ietf:params:acme:error:badNonce",
+                    "detail": "invalid nonce in request",
+                },
+                headers={"Replay-Nonce": mock_server.get_nonce()},
+            )
+
         # Handle directory
         if url == mock_server.base_url:
             return MockResponse(

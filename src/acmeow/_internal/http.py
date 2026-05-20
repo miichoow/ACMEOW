@@ -384,8 +384,22 @@ class AcmeHttpClient:
                     time.sleep(delay)
                     continue
 
-                # Check for error response (non-retryable)
+                # Check for error response
                 if response.status_code >= 400:
+                    # RFC 8555 §6.5: badNonce must be retried with the fresh nonce
+                    # the server returned (already cached by _update_nonce above).
+                    if (
+                        response.status_code == 400
+                        and attempt < self._retry_config.max_retries
+                        and self._is_bad_nonce(response)
+                    ):
+                        logger.warning(
+                            "POST %s: badNonce on attempt %d/%d, retrying with fresh nonce",
+                            url,
+                            attempt + 1,
+                            self._retry_config.max_retries + 1,
+                        )
+                        continue
                     self._handle_error_response(response)
 
                 return response
@@ -444,6 +458,13 @@ class AcmeHttpClient:
             HTTP response.
         """
         return self.post(url, "", key, kid=kid)
+
+    @staticmethod
+    def _is_bad_nonce(response: requests.Response) -> bool:
+        try:
+            return "badNonce" in response.json().get("type", "")
+        except ValueError:
+            return False
 
     def _handle_error_response(self, response: requests.Response) -> None:
         """Parse and raise an exception for ACME error responses.
