@@ -874,12 +874,25 @@ class AcmeClient:
         if not self._account:
             raise AcmeAuthenticationError("Account not created")
 
-        # Refresh order status
-        self._refresh_order()
-
-        if not self._order.is_ready:
+        # Wait for order to become ready — the server may take a moment to
+        # transition from pending to ready after authorizations are validated.
+        for attempt in range(5):
+            self._refresh_order()
+            if self._order.is_ready:
+                break
+            if self._order.is_invalid:
+                raise AcmeOrderError(
+                    f"Order failed before finalization (status: {self._order.status})"
+                )
+            logger.debug(
+                "Waiting for order to become ready (attempt %d/5, status: %s)",
+                attempt + 1,
+                self._order.status,
+            )
+            time.sleep(2)
+        else:
             raise AcmeOrderError(
-                f"Order not ready for finalization (status: {self._order.status})"
+                f"Order not ready for finalization after retries (status: {self._order.status})"
             )
 
         if csr is not None:
