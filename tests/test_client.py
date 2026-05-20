@@ -9,10 +9,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from acmeow import (
-    AcmeClient,
     AcmeAuthenticationError,
+    AcmeClient,
     AcmeConfigurationError,
     AcmeNetworkError,
+    AcmeOrderError,
     DnsConfig,
     Identifier,
     RetryConfig,
@@ -59,6 +60,23 @@ class TestAcmeClientInit:
             )
             assert client._http._retry_config.max_retries == 3
             assert client._http._retry_config.initial_delay == 0.5
+
+    def test_init_with_order_ready_timeout(self, temp_storage: Path):
+        """order_ready_timeout is stored on the client."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {
+            "newNonce": "https://acme.test/new-nonce",
+            "newAccount": "https://acme.test/new-account",
+            "newOrder": "https://acme.test/new-order",
+        }
+        with patch("requests.Session.get", return_value=mock_response):
+            client = AcmeClient(
+                server_url="https://acme.test/directory",
+                email="test@example.com",
+                storage_path=temp_storage,
+                order_ready_timeout=60,
+            )
+        assert client._order_ready_timeout == 60
 
     def test_init_missing_nonce_url_raises(self, temp_storage: Path):
         """Test that missing newNonce URL raises error."""
@@ -396,13 +414,12 @@ class TestContextManager:
         }
         mock_response.headers = {"Replay-Nonce": "test-nonce"}
 
-        with patch("requests.Session.get", return_value=mock_response):
-            with AcmeClient(
-                server_url="https://acme.test/directory",
-                email="test@example.com",
-                storage_path=temp_storage,
-            ) as client:
-                assert client is not None
+        with patch("requests.Session.get", return_value=mock_response), AcmeClient(
+            server_url="https://acme.test/directory",
+            email="test@example.com",
+            storage_path=temp_storage,
+        ) as client:
+            assert client is not None
 
     def test_close_called(self, temp_storage: Path):
         """Test that close is called on exit."""
@@ -458,8 +475,8 @@ class TestFinalizeOrderExternalCSR:
         client._account = acct
 
         # Wire up a READY order
-        from acmeow.models.order import Order
         from acmeow.enums import OrderStatus
+        from acmeow.models.order import Order
 
         client._order = Order(
             status=OrderStatus.READY,
@@ -558,8 +575,8 @@ class TestFinalizeOrderExternalCSR:
         """get_certificate returns None for the key when external CSR was used (no key file on disk)."""
         client = client_with_ready_order
 
-        from acmeow.models.order import Order
         from acmeow.enums import OrderStatus
+        from acmeow.models.order import Order
 
         client._order = Order(
             status=OrderStatus.VALID,
@@ -590,8 +607,8 @@ class TestFinalizeOrderExternalCSR:
         """get_certificate returns the key PEM when the key was generated internally."""
         client = client_with_ready_order
 
-        from acmeow.models.order import Order
         from acmeow.enums import OrderStatus
+        from acmeow.models.order import Order
 
         client._order = Order(
             status=OrderStatus.VALID,
@@ -623,3 +640,125 @@ class TestFinalizeOrderExternalCSR:
 
         assert returned_cert == cert_pem
         assert returned_key == key_pem
+
+
+class TestFinalizeOrderReadyTimeout:
+    """Tests for the pending→ready polling loop in finalize_order."""
+
+    @pytest.fixture
+    def client_with_pending_order(self, temp_storage: Path):
+        """Client with account + PENDING order and a short order_ready_timeout (4 s → 2 attempts)."""
+        mock_dir = MagicMock()
+        mock_dir.json.return_value = {
+            "newNonce": "https://acme.test/new-nonce",
+            "newAccount": "https://acme.test/new-account",
+            "newOrder": "https://acme.test/new-order",
+        }
+        mock_dir.headers = {"Replay-Nonce": "nonce"}
+
+        with patch("requests.Session.get", return_value=mock_dir):
+            client = AcmeClient(
+                server_url="https://acme.test/directory",
+                email="test@example.com",
+                storage_path=temp_storage,
+                order_ready_timeout=4,
+            )
+
+        from acmeow.models.account import Account
+
+        acct = Account(
+            email="test@example.com",
+            storage_path=temp_storage,
+            server_url="https://acme.test/directory",
+        )
+        acct.create_key()
+        acct.save("https://acme.test/acct/1", "valid")
+        client._account = acct
+
+        from acmeow.enums import OrderStatus
+        from acmeow.models.order import Order
+
+        client._order = Order(
+            status=OrderStatus.PENDING,
+            url="https://acme.test/order/1",
+            identifiers=(Identifier.dns("example.com"),),
+            finalize_url="https://acme.test/order/1/finalize",
+        )
+        return client
+
+    def _make_external_csr(self) -> bytes:
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import ec
+        from cryptography.x509.oid import NameOID
+
+        key = ec.generate_private_key(ec.SECP256R1())
+        csr = (
+            x509.CertificateSigningRequestBuilder()
+            .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "example.com")]))
+            .add_extension(
+                x509.SubjectAlternativeName([x509.DNSName("example.com")]),
+                critical=False,
+            )
+            .sign(key, hashes.SHA256())
+        )
+        return csr.public_bytes(serialization.Encoding.DER)
+
+    def _pending_response(self, nonce: str) -> MagicMock:
+        r = MagicMock(status_code=200, headers={"Replay-Nonce": nonce})
+        r.json.return_value = {
+            "status": "pending",
+            "identifiers": [{"type": "dns", "value": "example.com"}],
+            "finalize": "https://acme.test/order/1/finalize",
+        }
+        return r
+
+    def _ready_response(self, nonce: str) -> MagicMock:
+        r = MagicMock(status_code=200, headers={"Replay-Nonce": nonce})
+        r.json.return_value = {
+            "status": "ready",
+            "identifiers": [{"type": "dns", "value": "example.com"}],
+            "finalize": "https://acme.test/order/1/finalize",
+        }
+        return r
+
+    def test_finalize_retries_until_order_ready(self, client_with_pending_order):
+        """finalize_order succeeds after polling pending then ready."""
+        client = client_with_pending_order
+        csr_der = self._make_external_csr()
+
+        finalize_ok = MagicMock(status_code=200, headers={"Replay-Nonce": "n3"})
+        finalize_ok.json.return_value = {"status": "processing"}
+        poll_valid = MagicMock(status_code=200, headers={"Replay-Nonce": "n4"})
+        poll_valid.json.return_value = {
+            "status": "valid",
+            "certificate": "https://acme.test/cert/1",
+        }
+
+        with (
+            patch("acmeow.client.time.sleep"),
+            patch.object(client._http._session, "post") as mock_post,
+        ):
+            mock_post.side_effect = [
+                self._pending_response("n1"),
+                self._ready_response("n2"),
+                finalize_ok,
+                poll_valid,
+            ]
+            client.finalize_order(csr=csr_der)
+
+    def test_finalize_raises_when_order_stays_pending(self, client_with_pending_order):
+        """finalize_order raises AcmeOrderError after exhausting order_ready_timeout."""
+        client = client_with_pending_order  # order_ready_timeout=4 → 2 attempts
+        csr_der = self._make_external_csr()
+
+        with (
+            patch("acmeow.client.time.sleep"),
+            patch.object(client._http._session, "post") as mock_post,
+        ):
+            mock_post.side_effect = [
+                self._pending_response("n1"),
+                self._pending_response("n2"),
+            ]
+            with pytest.raises(AcmeOrderError, match="not ready"):
+                client.finalize_order(csr=csr_der)

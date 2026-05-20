@@ -67,6 +67,9 @@ class AcmeClient:
         verify_ssl: Whether to verify SSL certificates. Default True.
         timeout: Request timeout in seconds. Default 30.
         retry_config: Retry configuration for transient failures.
+        order_ready_timeout: Maximum seconds to wait for the upstream CA to
+            transition an order from ``pending`` to ``ready`` after
+            authorization validation. Polled every 2 seconds. Default 30.
 
     Example:
         >>> client = AcmeClient(
@@ -94,11 +97,13 @@ class AcmeClient:
         verify_ssl: bool = True,
         timeout: int = 30,
         retry_config: RetryConfig | None = None,
+        order_ready_timeout: int = 30,
     ) -> None:
         self._server_url = server_url.rstrip("/")
         self._email = email
         self._storage_path = Path(storage_path)
         self._verify_ssl = verify_ssl
+        self._order_ready_timeout = order_ready_timeout
 
         # HTTP client with retry support
         self._http = AcmeHttpClient(
@@ -866,8 +871,14 @@ class AcmeClient:
                 format. When provided, no private key is generated or saved.
 
         Raises:
-            AcmeOrderError: If finalization fails.
+            AcmeOrderError: If finalization fails or the order does not
+                transition to ``ready`` within ``order_ready_timeout`` seconds.
             AcmeConfigurationError: If the provided CSR cannot be parsed.
+
+        Note:
+            The maximum wait for the CA to mark an order ``ready`` after
+            challenge validation is controlled by ``order_ready_timeout``
+            on the constructor.
         """
         if not self._order:
             raise AcmeOrderError("No order exists")
@@ -876,7 +887,8 @@ class AcmeClient:
 
         # Wait for order to become ready — the server may take a moment to
         # transition from pending to ready after authorizations are validated.
-        for attempt in range(5):
+        _ready_attempts = max(1, self._order_ready_timeout // 2)
+        for attempt in range(_ready_attempts):
             self._refresh_order()
             if self._order.is_ready:
                 break
@@ -885,8 +897,9 @@ class AcmeClient:
                     f"Order failed before finalization (status: {self._order.status})"
                 )
             logger.debug(
-                "Waiting for order to become ready (attempt %d/5, status: %s)",
+                "Waiting for order to become ready (attempt %d/%d, status: %s)",
                 attempt + 1,
+                _ready_attempts,
                 self._order.status,
             )
             time.sleep(2)
