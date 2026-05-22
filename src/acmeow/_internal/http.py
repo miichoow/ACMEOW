@@ -8,18 +8,57 @@ from __future__ import annotations
 
 import logging
 import random
+import ssl
 import threading
 import time
 from typing import Any
 
 import requests
+import urllib3
 from cryptography.hazmat.primitives.asymmetric import ec
+from requests.adapters import HTTPAdapter
 
 from acmeow._internal.crypto import sign_es256
 from acmeow._internal.encoding import base64url_encode, base64url_encode_json
 from acmeow.exceptions import AcmeNetworkError, AcmeRateLimitError, AcmeServerError
 
 logger = logging.getLogger(__name__)
+
+
+def _make_no_verify_ctx() -> ssl.SSLContext:
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    return ctx
+
+
+class _NoVerifyAdapter(HTTPAdapter):
+    """HTTPAdapter that forces SSL verification off through CONNECT proxies.
+
+    With requests 2.34+ / urllib3 2.x, setting session.verify=False does not
+    propagate an ssl_context to the ProxyManager, so the environment's default
+    SSLContext (which validates certificates) is used for the tunnelled
+    connection. Three overrides are required to cover both proxied and direct
+    paths:
+
+    * send         — ensures verify=False reaches every code path in the base
+    * proxy_manager_for — bakes the non-verifying context into the ProxyManager
+    * init_poolmanager  — bakes it into the direct-connection PoolManager
+    """
+
+    def send(self, request: Any, **kwargs: Any) -> Any:  # type: ignore[override]
+        kwargs["verify"] = False
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        return super().send(request, **kwargs)
+
+    def proxy_manager_for(self, proxy: str, **proxy_kwargs: Any) -> Any:
+        proxy_kwargs["ssl_context"] = _make_no_verify_ctx()
+        return super().proxy_manager_for(proxy, **proxy_kwargs)
+
+    def init_poolmanager(self, *args: Any, **kwargs: Any) -> None:
+        kwargs["ssl_context"] = _make_no_verify_ctx()
+        super().init_poolmanager(*args, **kwargs)
+
 
 # HTTP status codes that trigger retry
 RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
@@ -83,14 +122,17 @@ class AcmeHttpClient:
 
     Args:
         proxy_url: URL to the proxy. Default None.
-        verify_ssl: Whether to verify SSL certificates. Default True.
+        verify_ssl: Whether to verify SSL certificates. ``True`` uses the
+            default CA bundle, ``False`` disables verification (e.g. Burp
+            proxy), or a path string to a custom CA bundle (e.g. exported
+            Burp CA cert). Default True.
         timeout: Request timeout in seconds. Default 30.
         retry_config: Retry configuration. Default uses standard backoff.
     """
     def __init__(
         self,
         proxy_url: str | None = None,
-        verify_ssl: bool = True,
+        verify_ssl: bool | str = True,
         timeout: int = 30,
         retry_config: RetryConfig | None = None,
     ) -> None:
@@ -98,8 +140,15 @@ class AcmeHttpClient:
         if proxy_url:
             self._session.proxies = {
                 "http": proxy_url,
-                "https": proxy_url
+                "https": proxy_url,
             }
+        if verify_ssl is False:
+            # urllib3 2.x does not honour session.verify=False through a CONNECT
+            # proxy — mount an adapter that injects an explicit non-verifying
+            # SSLContext so interception proxies (e.g. Burp) work correctly.
+            adapter = _NoVerifyAdapter()
+            self._session.mount("https://", adapter)
+            self._session.mount("http://", adapter)
         self._session.verify = verify_ssl
         self._timeout = timeout
         self._retry_config = retry_config or RetryConfig()
