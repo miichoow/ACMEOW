@@ -13,7 +13,6 @@ from acmeow import (
     AcmeClient,
     AcmeConfigurationError,
     AcmeNetworkError,
-    AcmeOrderError,
     DnsConfig,
     Identifier,
     RetryConfig,
@@ -723,13 +722,41 @@ class TestFinalizeOrderReadyTimeout:
         return r
 
     def test_finalize_retries_until_order_ready(self, client_with_pending_order):
-        """finalize_order succeeds after polling pending then ready."""
+        """finalize_order succeeds when server returns ready status."""
         client = client_with_pending_order
         csr_der = self._make_external_csr()
 
-        finalize_ok = MagicMock(status_code=200, headers={"Replay-Nonce": "n3"})
+        finalize_ok = MagicMock(status_code=200, headers={"Replay-Nonce": "n2"})
         finalize_ok.json.return_value = {"status": "processing"}
-        poll_valid = MagicMock(status_code=200, headers={"Replay-Nonce": "n4"})
+        poll_valid = MagicMock(status_code=200, headers={"Replay-Nonce": "n3"})
+        poll_valid.json.return_value = {
+            "status": "valid",
+            "certificate": "https://acme.test/cert/1",
+        }
+
+        with (
+            patch("acmeow.client.time.sleep"),
+            patch.object(client._http._session, "post") as mock_post,
+        ):
+            mock_post.side_effect = [
+                self._ready_response("n1"),
+                finalize_ok,
+                poll_valid,
+            ]
+            client.finalize_order(csr=csr_der)
+
+    def test_finalize_proceeds_when_order_stays_pending(self, client_with_pending_order):
+        """finalize_order proceeds with CSR submission when order stays pending.
+
+        Some CAs never transition the order to 'ready'; the client should
+        attempt finalization anyway rather than timing out.
+        """
+        client = client_with_pending_order
+        csr_der = self._make_external_csr()
+
+        finalize_ok = MagicMock(status_code=200, headers={"Replay-Nonce": "n2"})
+        finalize_ok.json.return_value = {"status": "processing"}
+        poll_valid = MagicMock(status_code=200, headers={"Replay-Nonce": "n3"})
         poll_valid.json.return_value = {
             "status": "valid",
             "certificate": "https://acme.test/cert/1",
@@ -741,24 +768,7 @@ class TestFinalizeOrderReadyTimeout:
         ):
             mock_post.side_effect = [
                 self._pending_response("n1"),
-                self._ready_response("n2"),
                 finalize_ok,
                 poll_valid,
             ]
             client.finalize_order(csr=csr_der)
-
-    def test_finalize_raises_when_order_stays_pending(self, client_with_pending_order):
-        """finalize_order raises AcmeOrderError after exhausting order_ready_timeout."""
-        client = client_with_pending_order  # order_ready_timeout=4 → 2 attempts
-        csr_der = self._make_external_csr()
-
-        with (
-            patch("acmeow.client.time.sleep"),
-            patch.object(client._http._session, "post") as mock_post,
-        ):
-            mock_post.side_effect = [
-                self._pending_response("n1"),
-                self._pending_response("n2"),
-            ]
-            with pytest.raises(AcmeOrderError, match="not ready"):
-                client.finalize_order(csr=csr_der)

@@ -64,7 +64,10 @@ class AcmeClient:
         email: Account email address.
         storage_path: Directory for storing account and certificate data.
         proxy_url: URL to the proxy. Default None.
-        verify_ssl: Whether to verify SSL certificates. Default True.
+        verify_ssl: Whether to verify SSL certificates. ``True`` uses the
+            default CA bundle, ``False`` disables verification (e.g. Burp
+            proxy), or a path string to a custom CA bundle (e.g. exported
+            Burp CA cert). Default True.
         timeout: Request timeout in seconds. Default 30.
         retry_config: Retry configuration for transient failures.
         order_ready_timeout: Maximum seconds to wait for the upstream CA to
@@ -72,16 +75,16 @@ class AcmeClient:
             authorization validation. Polled every 2 seconds. Default 30.
 
     Example:
-        >>> client = AcmeClient(
+        >>> client = AcmeClient(  # doctest: +SKIP
         ...     server_url="https://acme-staging-v02.api.letsencrypt.org/directory",
         ...     email="admin@example.com",
         ...     storage_path=Path("./acme_data"),
         ... )
-        >>> client.create_account()
-        >>> order = client.create_order([Identifier.dns("example.com")])
+        >>> client.create_account()  # doctest: +SKIP
+        >>> order = client.create_order([Identifier.dns("example.com")])  # doctest: +SKIP
         >>> # Complete challenges...
-        >>> client.finalize_order(KeyType.EC256)
-        >>> cert, key = client.get_certificate()
+        >>> client.finalize_order(KeyType.EC256)  # doctest: +SKIP
+        >>> cert, key = client.get_certificate()  # doctest: +SKIP
 
     Raises:
         AcmeConfigurationError: If configuration is invalid.
@@ -94,7 +97,7 @@ class AcmeClient:
         email: str,
         storage_path: Path | str,
         proxy_url: str | None = None,
-        verify_ssl: bool = True,
+        verify_ssl: bool | str = True,
         timeout: int = 30,
         retry_config: RetryConfig | None = None,
         order_ready_timeout: int = 30,
@@ -887,10 +890,13 @@ class AcmeClient:
 
         # Wait for order to become ready — the server may take a moment to
         # transition from pending to ready after authorizations are validated.
+        # Some CAs never transition to "ready" and keep the order in "pending"
+        # even when all authorizations are valid; proceed anyway and let the
+        # server reject the CSR if it is not actually ready.
         _ready_attempts = max(1, self._order_ready_timeout // 2)
         for attempt in range(_ready_attempts):
             self._refresh_order()
-            if self._order.is_ready:
+            if self._order.is_ready or self._order.is_pending:
                 break
             if self._order.is_invalid:
                 raise AcmeOrderError(
