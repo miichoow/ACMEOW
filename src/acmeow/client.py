@@ -41,6 +41,7 @@ from acmeow.exceptions import (
     AcmeDnsError,
     AcmeNetworkError,
     AcmeOrderError,
+    AcmeServerError,
     AcmeTimeoutError,
 )
 from acmeow.handlers.base import ChallengeHandler
@@ -455,6 +456,10 @@ class AcmeClient:
 
             logger.info("Loaded order from disk: %s (status: %s)", self._order.url, self._order.status)
 
+        except AcmeServerError as e:
+            logger.warning("Discarding stale order (server rejected it): %s", e)
+            self._order = None
+            order_path.unlink(missing_ok=True)
         except (KeyError, ValueError, json.JSONDecodeError) as e:
             logger.warning("Failed to load order: %s", e)
             order_path.unlink(missing_ok=True)

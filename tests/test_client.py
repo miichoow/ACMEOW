@@ -17,6 +17,7 @@ from acmeow import (
     Identifier,
     RetryConfig,
 )
+from acmeow.exceptions import AcmeServerError
 
 
 class TestAcmeClientInit:
@@ -341,6 +342,42 @@ class TestOrderRecovery:
                     order = client_with_order.load_order()
                     assert order is not None
                     assert order.url == "https://acme.test/order/saved"
+
+    def test_load_order_discards_expired_order(self, client_with_order: AcmeClient, temp_storage: Path):
+        """Server rejecting a saved order with 400 'order is expired' clears state and file."""
+        order_file = temp_storage / "orders" / "current_order.json"
+        assert order_file.exists()
+
+        mock_account = MagicMock()
+        mock_account.uri = "https://acme.test/acct/123"
+        mock_account.key = MagicMock()
+        client_with_order._account = mock_account
+
+        expired_error = AcmeServerError(400, "urn:ietf:params:acme:error:malformed", "order is expired")
+
+        with patch.object(client_with_order._http, "post_as_get", side_effect=expired_error):
+            client_with_order.load_order()
+
+        assert client_with_order._order is None
+        assert not order_file.exists()
+
+    def test_load_order_discards_on_any_server_error(self, client_with_order: AcmeClient, temp_storage: Path):
+        """Any AcmeServerError during order refresh clears state and file."""
+        order_file = temp_storage / "orders" / "current_order.json"
+        assert order_file.exists()
+
+        mock_account = MagicMock()
+        mock_account.uri = "https://acme.test/acct/123"
+        mock_account.key = MagicMock()
+        client_with_order._account = mock_account
+
+        server_error = AcmeServerError(403, "urn:ietf:params:acme:error:unauthorized", "account not found")
+
+        with patch.object(client_with_order._http, "post_as_get", side_effect=server_error):
+            client_with_order.load_order()
+
+        assert client_with_order._order is None
+        assert not order_file.exists()
 
 
 class TestDnsVerification:
