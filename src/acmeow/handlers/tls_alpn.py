@@ -265,7 +265,7 @@ class CallbackTlsAlpnHandler(ChallengeHandler):
 # anything that isn't a valid DNS name (or wildcard) so it can never be
 # interpreted as a path (e.g. "../../etc/cron.d/x").
 _DOMAIN_RE = re.compile(
-    r"^\*?[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?"
+    r"^(?:\*\.)?[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?"
     r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)*$"
 )
 
