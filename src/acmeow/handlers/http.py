@@ -6,12 +6,23 @@ Provides handlers for HTTP-01 challenge validation.
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Callable
 from pathlib import Path
 
 from acmeow.handlers.base import ChallengeHandler
 
 logger = logging.getLogger(__name__)
+
+# RFC 8555 §8.3: the token is base64url text (no padding). Reject anything
+# else so it can never be interpreted as a path (e.g. "../../etc/cron.d/x").
+_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _validate_token(token: str) -> str:
+    if not _TOKEN_RE.fullmatch(token):
+        raise ValueError(f"Invalid HTTP-01 challenge token: {token!r}")
+    return token
 
 
 class FileHttpHandler(ChallengeHandler):
@@ -52,6 +63,8 @@ class FileHttpHandler(ChallengeHandler):
             token: The challenge token (becomes the filename).
             key_authorization: The key authorization (file content).
         """
+        _validate_token(token)
+
         # Ensure challenge directory exists
         self._challenge_dir.mkdir(parents=True, exist_ok=True)
 
@@ -72,6 +85,12 @@ class FileHttpHandler(ChallengeHandler):
             domain: The domain that was validated.
             token: The challenge token (the filename).
         """
+        try:
+            _validate_token(token)
+        except ValueError as e:
+            logger.warning("Refusing to clean up invalid HTTP challenge token: %s", e)
+            return
+
         challenge_path = self._challenge_dir / token
 
         try:
