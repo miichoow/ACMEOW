@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from urllib.parse import quote
 
 import requests
 
@@ -75,7 +76,7 @@ class DigitalOceanDnsProvider(DnsProvider):
             test_domain = ".".join(parts[i:])
 
             response = self._session.get(
-                f"{DIGITALOCEAN_API_BASE}/domains/{test_domain}",
+                f"{DIGITALOCEAN_API_BASE}/domains/{quote(test_domain, safe='')}",
                 timeout=self._timeout,
             )
 
@@ -130,7 +131,7 @@ class DigitalOceanDnsProvider(DnsProvider):
         logger.debug("Creating DigitalOcean TXT record: %s = %s", name, value)
 
         response = self._session.post(
-            f"{DIGITALOCEAN_API_BASE}/domains/{domain_name}/records",
+            f"{DIGITALOCEAN_API_BASE}/domains/{quote(domain_name, safe='')}/records",
             json={
                 "type": "TXT",
                 "name": record_name,
@@ -171,7 +172,8 @@ class DigitalOceanDnsProvider(DnsProvider):
         logger.debug("Deleting DigitalOcean TXT record: %s (id=%s)", record.name, record.id)
 
         response = self._session.delete(
-            f"{DIGITALOCEAN_API_BASE}/domains/{domain_name}/records/{record.id}",
+            f"{DIGITALOCEAN_API_BASE}/domains/{quote(domain_name, safe='')}"
+            f"/records/{quote(record.id, safe='')}",
             timeout=self._timeout,
         )
         response.raise_for_status()
@@ -201,7 +203,7 @@ class DigitalOceanDnsProvider(DnsProvider):
             params["type"] = record_type
 
         response = self._session.get(
-            f"{DIGITALOCEAN_API_BASE}/domains/{domain_name}/records",
+            f"{DIGITALOCEAN_API_BASE}/domains/{quote(domain_name, safe='')}/records",
             params=params,
             timeout=self._timeout,
         )

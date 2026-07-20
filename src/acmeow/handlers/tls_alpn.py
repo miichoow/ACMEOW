@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import logging
+import re
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -260,6 +261,21 @@ class CallbackTlsAlpnHandler(ChallengeHandler):
             )
 
 
+# Domain identifiers come from the CA's authorization response. Reject
+# anything that isn't a valid DNS name (or wildcard) so it can never be
+# interpreted as a path (e.g. "../../etc/cron.d/x").
+_DOMAIN_RE = re.compile(
+    r"^\*?[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?"
+    r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)*$"
+)
+
+
+def _validate_domain(domain: str) -> str:
+    if not _DOMAIN_RE.fullmatch(domain):
+        raise ValueError(f"Invalid domain for TLS-ALPN-01 challenge: {domain!r}")
+    return domain
+
+
 class FileTlsAlpnHandler(ChallengeHandler):
     """TLS-ALPN-01 handler that writes certificates to files.
 
@@ -297,11 +313,13 @@ class FileTlsAlpnHandler(ChallengeHandler):
 
     def _get_cert_path(self, domain: str) -> Path:
         """Get the certificate file path for a domain."""
+        _validate_domain(domain)
         filename = self._cert_pattern.format(domain=domain.replace("*", "_wildcard"))
         return self._cert_dir / filename
 
     def _get_key_path(self, domain: str) -> Path:
         """Get the key file path for a domain."""
+        _validate_domain(domain)
         filename = self._key_pattern.format(domain=domain.replace("*", "_wildcard"))
         return self._cert_dir / filename
 
