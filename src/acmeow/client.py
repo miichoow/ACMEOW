@@ -12,6 +12,8 @@ import json
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -45,12 +47,33 @@ from acmeow.exceptions import (
     AcmeTimeoutError,
 )
 from acmeow.handlers.base import ChallengeHandler
+from acmeow.handlers.dns_persist import (
+    WILDCARD_POLICY,
+    DnsPersistHandler,
+    build_record_value,
+    select_issuer_domain_name,
+    validation_domain_name,
+)
 from acmeow.models.account import Account
 from acmeow.models.authorization import Authorization
 from acmeow.models.identifier import Identifier
 from acmeow.models.order import Order
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _PersistPlan:
+    """A DNS-PERSIST-01 record to publish at one Validation Domain Name.
+
+    Several authorizations can map to a single validation name, so their
+    requirements are merged here before the record is built.
+    """
+
+    domain: str
+    issuer: str
+    accounturi: str
+    wildcard: bool
 
 
 class AcmeClient:
@@ -553,6 +576,15 @@ class AcmeClient:
                         f"No {challenge_type.value} challenge available",
                     )
 
+                # Every challenge type handled here derives its response from a
+                # token. Only dns-persist-01 is tokenless, and it has its own
+                # method, so a missing token means a malformed challenge.
+                if challenge.token is None:
+                    raise AcmeAuthorizationError(
+                        auth.domain,
+                        f"Server sent a {challenge_type.value} challenge without a token",
+                    )
+
                 # Compute key authorization
                 key_auth = get_key_authorization(
                     challenge.token,
@@ -608,6 +640,193 @@ class AcmeClient:
                 self._cleanup_challenges_parallel(handler, setup_challenges, max_workers)
             else:
                 self._cleanup_challenges_sequential(handler, setup_challenges)
+
+    def complete_dns_persist_challenges(
+        self,
+        handler: DnsPersistHandler,
+        preferred_issuer: str | None = None,
+        persist_until: int | datetime | None = None,
+        propagation_delay: int | None = None,
+        verify_dns: bool = True,
+        dns_timeout: int = 300,
+    ) -> None:
+        """Complete all pending challenges using DNS-PERSIST-01.
+
+        Publishes a persistent TXT record at ``_validation-persist.<domain>``
+        for each pending authorization, notifies the ACME server, and waits
+        for validation.
+
+        This is a separate method from :meth:`complete_challenges` because
+        DNS-PERSIST-01 uses neither a token nor a key authorization, and its
+        records are meant to outlive the order. By default the records are
+        left published so they can authorize future issuance.
+
+        An order covering both a domain and its wildcard yields two
+        authorizations sharing one validation name; they are merged into a
+        single record carrying ``policy=wildcard``, which authorizes both.
+
+        The challenge type is defined by draft-ietf-acme-dns-persist, which is
+        not yet an RFC, so the wire format may change. Offered by Let's Encrypt
+        staging as of July 2026.
+
+        Args:
+            handler: Handler responsible for publishing the records.
+            preferred_issuer: Issuer Domain Name to publish when the CA offers
+                several. Defaults to the first name the CA offers.
+            persist_until: Optional expiry for the record, as a UNIX timestamp
+                or datetime. Omitted from the record when None.
+            propagation_delay: Seconds to wait after publishing before
+                notifying the server. Defaults to the handler's own value.
+            verify_dns: Whether to confirm the records resolve before
+                notifying the server. Requires DNS configuration. Default True.
+            dns_timeout: Maximum time to wait for propagation. Default 300.
+
+        Raises:
+            AcmeAuthorizationError: If a pending authorization offers no
+                DNS-PERSIST-01 challenge, or validation fails.
+            AcmeOrderError: If no order exists.
+            AcmeDnsError: If a record fails to propagate.
+            DnsPersistError: If the CA's challenge data cannot be rendered
+                into a valid record value.
+
+        Example:
+            >>> handler = CallbackDnsPersistHandler(upsert_txt)
+            >>> client.complete_dns_persist_challenges(handler)
+        """
+        if not self._order:
+            raise AcmeOrderError("No order exists")
+        if not self._account:
+            raise AcmeAuthenticationError("Account not created")
+
+        delay = (
+            propagation_delay
+            if propagation_delay is not None
+            else getattr(handler, "propagation_delay", 0)
+        )
+
+        # domain, record_name, record_value
+        published: list[tuple[str, str, str]] = []
+
+        try:
+            # Plan one record per Validation Domain Name. An order covering both
+            # example.com and *.example.com yields two authorizations that share
+            # a single validation name, and policy=wildcard authorizes the base
+            # name as well as wildcards, so the two merge into one record.
+            plans: dict[str, _PersistPlan] = {}
+
+            for auth in self._order.authorizations:
+                if auth.is_valid:
+                    logger.debug("Authorization already valid: %s", auth.domain)
+                    continue
+
+                challenge = auth.get_dns_persist_challenge()
+                if not challenge:
+                    raise AcmeAuthorizationError(
+                        auth.domain,
+                        "No dns-persist-01 challenge available",
+                    )
+
+                # The draft has the CA supply accounturi in the challenge, but
+                # Let's Encrypt omits it, so fall back to our own account URI.
+                accounturi = challenge.accounturi or self._account.uri
+                if not accounturi:
+                    raise AcmeAuthorizationError(
+                        auth.domain,
+                        "No accounturi available for dns-persist-01 record",
+                    )
+
+                issuer = select_issuer_domain_name(
+                    challenge.issuer_domain_names, preferred_issuer
+                )
+
+                # RFC 8555 section 7.1.4: a wildcard authorization carries the
+                # base domain as its identifier and sets the wildcard flag, so
+                # the "*." prefix is already gone. The prefix check is a
+                # fallback for servers that leave it in place.
+                is_wildcard = auth.wildcard or auth.domain.startswith("*.")
+                record_name = validation_domain_name(auth.domain)
+
+                plan = plans.get(record_name)
+                if plan is None:
+                    plans[record_name] = _PersistPlan(
+                        domain=auth.domain.removeprefix("*."),
+                        issuer=issuer,
+                        accounturi=accounturi,
+                        wildcard=is_wildcard,
+                    )
+                else:
+                    plan.wildcard = plan.wildcard or is_wildcard
+
+            for record_name, plan in plans.items():
+                record_value = build_record_value(
+                    issuer_domain_name=plan.issuer,
+                    accounturi=plan.accounturi,
+                    policy=WILDCARD_POLICY if plan.wildcard else None,
+                    persist_until=persist_until,
+                )
+
+                logger.info("Setting up dns-persist-01 challenge for %s", plan.domain)
+                handler.setup(plan.domain, record_name, record_value)
+                published.append((plan.domain, record_name, record_value))
+
+            if delay > 0 and published:
+                logger.info("Waiting %d seconds for propagation", delay)
+                time.sleep(delay)
+
+            if verify_dns and self._dns_config and published:
+                self._verify_persist_propagation(published, dns_timeout)
+
+            # Respond to all challenges (sequential - server expects order)
+            for auth in self._order.authorizations:
+                if auth.is_valid:
+                    continue
+
+                challenge = auth.get_dns_persist_challenge()
+                if not challenge:
+                    continue
+
+                logger.info("Responding to challenge for %s", auth.domain)
+                self._respond_to_challenge(challenge.url)
+
+            self._poll_authorizations()
+            self._save_order()
+
+        finally:
+            for domain, record_name, _ in published:
+                try:
+                    handler.cleanup(domain, record_name)
+                except Exception as e:
+                    logger.warning("Challenge cleanup failed for %s: %s", domain, e)
+
+    def _verify_persist_propagation(
+        self,
+        published: list[tuple[str, str, str]],
+        timeout: int,
+    ) -> None:
+        """Verify that DNS-PERSIST-01 records have propagated.
+
+        Args:
+            published: List of (domain, record_name, record_value) tuples.
+            timeout: Maximum time to wait for propagation.
+
+        Raises:
+            AcmeDnsError: If any record fails to propagate.
+        """
+        if not self._dns_config:
+            return
+
+        verifier = DnsVerifier(self._dns_config)
+
+        for domain, record_name, record_value in published:
+            logger.info("Verifying DNS propagation for %s", record_name)
+
+            if not verifier.verify_txt_record(
+                record_name, record_value, max_wait=timeout
+            ):
+                raise AcmeDnsError(
+                    domain,
+                    f"TXT record {record_name} did not propagate within {timeout}s",
+                )
 
     def _setup_challenges_sequential(
         self,

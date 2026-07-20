@@ -25,7 +25,7 @@ class ChallengeType(StrEnum):
 
     The ACME protocol supports multiple challenge types for proving
     control over a domain. This library supports DNS-01, HTTP-01,
-    and TLS-ALPN-01.
+    TLS-ALPN-01, and the draft DNS-PERSIST-01.
     """
 
     DNS = "dns-01"
@@ -36,6 +36,15 @@ class ChallengeType(StrEnum):
 
     TLS_ALPN = "tls-alpn-01"
     """TLS-ALPN-01 challenge: Prove control by serving a special TLS certificate."""
+
+    DNS_PERSIST = "dns-persist-01"
+    """DNS-PERSIST-01 challenge: Prove control with a long-lived DNS TXT record.
+
+    Unlike DNS-01, the record is not derived from a per-challenge token and is
+    intended to stay published so it can authorize repeated issuance. Defined by
+    draft-ietf-acme-dns-persist, which is not yet an RFC, so the wire format may
+    still change. Offered by Let's Encrypt staging as of July 2026.
+    """
 
 
 class IdentifierType(StrEnum):

@@ -20,20 +20,27 @@ class Challenge:
     challenge data from the server.
 
     Args:
-        type: The challenge type (DNS-01 or HTTP-01).
+        type: The challenge type.
         status: Current challenge status.
         url: URL for responding to and polling the challenge.
-        token: Challenge token provided by the server.
+        token: Challenge token provided by the server. ``None`` for challenge
+            types that do not use one, such as DNS-PERSIST-01.
         validated: Timestamp when the challenge was validated (if valid).
         error: Error details if the challenge failed.
+        accounturi: DNS-PERSIST-01 only. URI identifying the ACME account that
+            must appear in the ``accounturi`` parameter of the TXT record.
+        issuer_domain_names: DNS-PERSIST-01 only. Issuer Domain Names the CA
+            will accept; the client picks one for the record's issue-value.
     """
 
     type: ChallengeType
     status: ChallengeStatus
     url: str
-    token: str
+    token: str | None = None
     validated: str | None = None
     error: dict[str, str] | None = None
+    accounturi: str | None = None
+    issuer_domain_names: tuple[str, ...] = ()
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Challenge:
@@ -53,17 +60,22 @@ class Challenge:
             ctype = ChallengeType.HTTP
         elif challenge_type == "tls-alpn-01":
             ctype = ChallengeType.TLS_ALPN
+        elif challenge_type == "dns-persist-01":
+            ctype = ChallengeType.DNS_PERSIST
         else:
             # Default to DNS for unknown types
             ctype = ChallengeType.DNS
 
+        # DNS-PERSIST-01 challenges carry no token; every other type does.
         return cls(
             type=ctype,
             status=ChallengeStatus(data.get("status", "pending")),
             url=data["url"],
-            token=data["token"],
+            token=data.get("token"),
             validated=data.get("validated"),
             error=data.get("error"),
+            accounturi=data.get("accounturi"),
+            issuer_domain_names=tuple(data.get("issuer-domain-names", ())),
         )
 
     @property

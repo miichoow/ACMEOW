@@ -43,6 +43,7 @@ from typing import Any
 
 from acmeow.dns.base import DnsProvider, DnsRecord
 from acmeow.dns.handler import DnsProviderHandler
+from acmeow.dns.persist_handler import DnsProviderPersistHandler
 
 logger = logging.getLogger(__name__)
 
@@ -172,6 +173,7 @@ __all__ = [
     "DnsProvider",
     "DnsRecord",
     "DnsProviderHandler",
+    "DnsProviderPersistHandler",
     # Registry functions
     "register_dns_provider",
     "unregister_dns_provider",

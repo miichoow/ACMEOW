@@ -100,6 +100,14 @@ class Authorization:
         """
         return self.get_challenge(ChallengeType.TLS_ALPN)
 
+    def get_dns_persist_challenge(self) -> Challenge | None:
+        """Get the DNS-PERSIST-01 challenge if available.
+
+        Returns:
+            The DNS-PERSIST-01 challenge, or None if not available.
+        """
+        return self.get_challenge(ChallengeType.DNS_PERSIST)
+
     @property
     def is_pending(self) -> bool:
         """Check if the authorization is pending completion."""

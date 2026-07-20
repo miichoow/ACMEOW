@@ -17,9 +17,9 @@ A production-grade Python library for automated SSL/TLS certificate management u
 - **Full ACME Protocol Support**: Complete RFC 8555 implementation including:
   - Account creation, update, key rollover, and deactivation
   - Certificate ordering, issuance, and revocation
-  - DNS-01, HTTP-01, and TLS-ALPN-01 challenge validation
+  - DNS-01, HTTP-01, and TLS-ALPN-01 challenge validation, plus draft DNS-PERSIST-01
   - External CSR support for bring-your-own key workflows
-- **Multiple Challenge Types**: Supports DNS-01, HTTP-01, and TLS-ALPN-01 challenges
+- **Multiple Challenge Types**: Supports DNS-01, HTTP-01, and TLS-ALPN-01 challenges, plus the draft DNS-PERSIST-01 persistent method
 - **Flexible Challenge Handlers**: Built-in handlers and callback-based custom handlers
 - **Automatic Retry with Backoff**: Configurable retry logic for transient failures
 - **DNS Propagation Verification**: Optional verification that DNS records are visible before challenge completion
@@ -169,6 +169,38 @@ handler = FileTlsAlpnHandler(
 )
 
 client.complete_challenges(handler, challenge_type=ChallengeType.TLS_ALPN)
+```
+
+### DNS-PERSIST-01 Challenge (persistent record, draft)
+
+DNS-PERSIST-01 proves domain control with a **long-lived** TXT record at `_validation-persist.<domain>` that stays published and authorizes future issuance, so renewals need no DNS changes.
+
+> **Warning:** Defined by [draft-ietf-acme-dns-persist](https://datatracker.ietf.org/doc/draft-ietf-acme-dns-persist/), an Internet-Draft that is **not yet an RFC**, so the record format may still change. Let's Encrypt **staging** offers it (verified July 2026); production and other CAs are unverified — check with `auth.get_dns_persist_challenge()`, which returns `None` when the CA does not offer it.
+
+Unlike DNS-01, this method uses no token and no key authorization. The record value binds an Issuer Domain Name to your account URI using RFC 8659 `issue-value` syntax, so it has its own handler interface and client method:
+
+```python
+from acmeow import CallbackDnsPersistHandler
+
+def upsert_txt(domain: str, record_name: str, value: str) -> None:
+    # record_name: "_validation-persist.example.com"
+    # value: "ca.example; accounturi=https://ca.example/acct/1"
+    your_dns_api.upsert_record(record_name, "TXT", value)
+
+handler = CallbackDnsPersistHandler(upsert_txt)
+
+client.complete_dns_persist_challenges(handler)
+```
+
+The record is **not** deleted after validation — that persistence is the point. Pass `persist=False` to the handler to opt out.
+
+DNS providers work with it too:
+
+```python
+from acmeow import get_dns_provider, DnsProviderPersistHandler
+
+provider = get_dns_provider("cloudflare", api_token="...")
+client.complete_dns_persist_challenges(DnsProviderPersistHandler(provider))
 ```
 
 ## Key Types
@@ -550,6 +582,7 @@ The `examples/` directory contains complete working examples:
 |---------|-------------|
 | `dns_challenge.py` | DNS-01 challenge workflow for certificate issuance |
 | `http_challenge.py` | HTTP-01 challenge workflow for certificate issuance |
+| `dns_persist_challenge.py` | DNS-PERSIST-01 persistent record workflow (draft) |
 | `account_management.py` | Account creation, updates, and key rollover |
 | `revoke_certificate.py` | Certificate revocation |
 | `deactivate_account.py` | Permanent account deactivation |

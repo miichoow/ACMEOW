@@ -1,7 +1,8 @@
 """ACMEOW - Production-grade ACME protocol client library.
 
 A Python library for automated SSL/TLS certificate management using the
-ACME protocol (RFC 8555). Supports DNS-01, HTTP-01, and TLS-ALPN-01 challenges.
+ACME protocol (RFC 8555). Supports DNS-01, HTTP-01, and TLS-ALPN-01 challenges,
+plus the draft DNS-PERSIST-01 method (draft-ietf-acme-dns-persist).
 
 Basic Usage:
     >>> from acmeow import AcmeClient, Identifier, KeyType
@@ -61,6 +62,7 @@ from acmeow.convenience import (
 from acmeow.dns import (
     DnsProvider,
     DnsProviderHandler,
+    DnsProviderPersistHandler,
     DnsRecord,
     get_dns_provider,
     is_dns_provider_available,
@@ -91,13 +93,24 @@ from acmeow.exceptions import (
     AcmeTimeoutError,
 )
 from acmeow.handlers import (
+    PERSIST_LABEL,
+    WILDCARD_POLICY,
     CallbackDnsHandler,
+    CallbackDnsPersistHandler,
     CallbackHttpHandler,
     CallbackTlsAlpnHandler,
     ChallengeHandler,
+    DnsPersistError,
+    DnsPersistHandler,
     FileHttpHandler,
     FileTlsAlpnHandler,
+    ManualDnsPersistHandler,
+    PersistRecordValue,
+    build_record_value,
     generate_tls_alpn_certificate,
+    parse_record_value,
+    select_issuer_domain_name,
+    validation_domain_name,
 )
 from acmeow.models import (
     Account,
@@ -144,6 +157,19 @@ __all__ = [
     "CallbackTlsAlpnHandler",
     "FileTlsAlpnHandler",
     "generate_tls_alpn_certificate",
+    # Handlers - DNS-PERSIST-01 (draft-ietf-acme-dns-persist)
+    "DnsPersistHandler",
+    "CallbackDnsPersistHandler",
+    "ManualDnsPersistHandler",
+    "DnsProviderPersistHandler",
+    "PersistRecordValue",
+    "DnsPersistError",
+    "build_record_value",
+    "parse_record_value",
+    "select_issuer_domain_name",
+    "validation_domain_name",
+    "PERSIST_LABEL",
+    "WILDCARD_POLICY",
     # DNS Provider System
     "DnsProvider",
     "DnsProviderHandler",
